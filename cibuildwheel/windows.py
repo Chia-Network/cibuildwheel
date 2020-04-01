@@ -23,69 +23,6 @@ def shell(args, env=None, cwd=None):
     return subprocess.check_call(' '.join(args), env=env, cwd=cwd, shell=True)
 
 
-def get_nuget_args(version, arch):
-    python_name = 'python' if version[0] == '3' else 'python2'
-    if arch == '32':
-        python_name = python_name + 'x86'
-    return [python_name, '-Version', version, '-OutputDirectory', 'C:\\cibw\\python']
-
-
-def get_python_configurations(build_selector):
-    PythonConfiguration = namedtuple('PythonConfiguration', ['version', 'arch', 'identifier', 'url'])
-    python_configurations = [
-        PythonConfiguration(version='2.7.17', arch='32', identifier='cp27-win32', url=None),
-        PythonConfiguration(version='2.7.17', arch='64', identifier='cp27-win_amd64', url=None),
-        PythonConfiguration(version='3.5.4', arch='32', identifier='cp35-win32', url=None),
-        PythonConfiguration(version='3.5.4', arch='64', identifier='cp35-win_amd64', url=None),
-        PythonConfiguration(version='3.6.8', arch='32', identifier='cp36-win32', url=None),
-        PythonConfiguration(version='3.6.8', arch='64', identifier='cp36-win_amd64', url=None),
-        PythonConfiguration(version='3.7.6', arch='32', identifier='cp37-win32', url=None),
-        PythonConfiguration(version='3.7.6', arch='64', identifier='cp37-win_amd64', url=None),
-        PythonConfiguration(version='3.8.2', arch='32', identifier='cp38-win32', url=None),
-        PythonConfiguration(version='3.8.2', arch='64', identifier='cp38-win_amd64', url=None),
-        PythonConfiguration(version='2.7-v7.3.0', arch='32', identifier='pp27-win32', url='https://bitbucket.org/pypy/pypy/downloads/pypy2.7-v7.3.0-win32.zip'),
-        PythonConfiguration(version='3.6-v7.3.0', arch='32', identifier='pp36-win32', url='https://bitbucket.org/pypy/pypy/downloads/pypy3.6-v7.3.0-win32.zip'),
-    ]
-
-    if IS_RUNNING_ON_TRAVIS:
-        # cannot install VCForPython27.msi which is needed for compiling C software
-        # try with (and similar): msiexec /i VCForPython27.msi ALLUSERS=1 ACCEPT=YES /passive
-        python_configurations = [c for c in python_configurations if not c.version.startswith('2.7')]
-
-    # skip builds as required
-    python_configurations = [c for c in python_configurations if build_selector(c.identifier)]
-
-    return python_configurations
-
-
-def extract_zip(zip_src, dest):
-    with ZipFile(zip_src) as zip:
-        zip.extractall(dest)
-
-
-def install_cpython(version, arch, nuget):
-    nuget_args = get_nuget_args(version, arch)
-    installation_path = os.path.join(nuget_args[-1], nuget_args[0] + '.' + version, 'tools')
-    shell([nuget, 'install'] + nuget_args)
-    return installation_path
-
-
-def install_pypy(version, arch, url):
-    assert arch == '32'
-    # Inside the PyPy zip file is a directory with the same name
-    zip_filename = url.rsplit('/', 1)[-1]
-    installation_path = os.path.join('C:\\cibw', os.path.splitext(zip_filename)[0])
-    if not os.path.exists(installation_path):
-        pypy_zip = os.path.join('C:\\cibw', zip_filename)
-        download(url, pypy_zip)
-        # Extract to the parent directory because the zip file still contains a directory
-        extract_zip(pypy_zip, os.path.dirname(installation_path))
-        pypy_exe = 'pypy3.exe' if version[0] == '3' else 'pypy.exe'
-        shell(['mklink', os.path.join(installation_path, 'python.exe'), os.path.join(installation_path, pypy_exe)])
-        shell(['mklink', '/d', os.path.join(installation_path, 'Scripts'), os.path.join(installation_path, 'bin')])
-    return installation_path
-
-
 def build(project_dir, output_dir, test_command, before_test, test_requires, test_extras, before_build, build_verbosity, build_selector, repair_command, environment):
     abs_project_dir = os.path.abspath(project_dir)
     temp_dir = tempfile.mkdtemp(prefix='cibuildwheel')
@@ -95,13 +32,13 @@ def build(project_dir, output_dir, test_command, before_test, test_requires, tes
     # run the before_build command
     if before_build:
         before_build_prepared = prepare_command(before_build, project=abs_project_dir)
-        shell([before_build_prepared], env=env)
+        shell([before_build_prepared])
 
     # build the wheel
     if os.path.exists(built_wheel_dir):
         shutil.rmtree(built_wheel_dir)
     os.makedirs(built_wheel_dir)
-    shell(['pip', 'wheel', abs_project_dir, '-w', built_wheel_dir, '--no-deps'] + get_build_verbosity_extra_flags(build_verbosity), env=env)
+    shell(['pip', 'wheel', abs_project_dir, '-w', built_wheel_dir, '--no-deps'] + get_build_verbosity_extra_flags(build_verbosity))
     built_wheel = glob(os.path.join(built_wheel_dir, '*.whl'))[0]
 
     # repair the wheel
@@ -113,15 +50,15 @@ def build(project_dir, output_dir, test_command, before_test, test_requires, tes
         shutil.move(built_wheel, repaired_wheel_dir)
     else:
         repair_command_prepared = prepare_command(repair_command, wheel=built_wheel, dest_dir=repaired_wheel_dir)
-        shell([repair_command_prepared], env=env)
+        shell([repair_command_prepared])
     repaired_wheel = glob(os.path.join(repaired_wheel_dir, '*.whl'))[0]
 
     if test_command:
         # set up a virtual environment to install and test from, to make sure
         # there are no dependencies that were pulled in at build time.
-        shell(['pip', 'install', 'virtualenv'], env=env)
+        shell(['pip', 'install', 'virtualenv'])
         venv_dir = tempfile.mkdtemp()
-        shell(['python', '-m', 'virtualenv', venv_dir], env=env)
+        shell(['python', '-m', 'virtualenv', venv_dir])
 
         virtualenv_env = env.copy()
 
