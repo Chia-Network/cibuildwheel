@@ -38,7 +38,7 @@ def build(project_dir, output_dir, test_command, before_test, test_requires, tes
     if os.path.exists(built_wheel_dir):
         shutil.rmtree(built_wheel_dir)
     os.makedirs(built_wheel_dir)
-    shell(['pip', 'wheel', abs_project_dir, '-w', built_wheel_dir, '--no-deps'] + get_build_verbosity_extra_flags(build_verbosity))
+    shell(['pip3', 'wheel', abs_project_dir, '-w', built_wheel_dir, '--no-deps'] + get_build_verbosity_extra_flags(build_verbosity))
     built_wheel = glob(os.path.join(built_wheel_dir, '*.whl'))[0]
 
     # repair the wheel
@@ -56,11 +56,11 @@ def build(project_dir, output_dir, test_command, before_test, test_requires, tes
     if test_command:
         # set up a virtual environment to install and test from, to make sure
         # there are no dependencies that were pulled in at build time.
-        shell(['pip', 'install', 'virtualenv'])
+        shell(['pip3', 'install', 'virtualenv'])
         venv_dir = tempfile.mkdtemp()
-        shell(['python', '-m', 'virtualenv', venv_dir])
+        shell(['python3', '-m', 'virtualenv', venv_dir])
 
-        virtualenv_env = env.copy()
+        virtualenv_env = os.environ.copy()
 
         venv_script_path = os.path.join(venv_dir, 'Scripts')
         if os.path.exists(os.path.join(venv_dir, 'bin')):
@@ -77,11 +77,11 @@ def build(project_dir, output_dir, test_command, before_test, test_requires, tes
             shell([before_test_prepared], env=virtualenv_env)
 
         # install the wheel
-        shell(['pip', 'install', repaired_wheel + test_extras], env=virtualenv_env)
+        shell(['pip3', 'install', repaired_wheel + test_extras], env=virtualenv_env)
 
         # test the wheel
         if test_requires:
-            shell(['pip', 'install'] + test_requires, env=virtualenv_env)
+            shell(['pip3', 'install'] + test_requires, env=virtualenv_env)
 
         # run the tests from c:\, with an absolute path in the command
         # (this ensures that Python runs the tests against the installed wheel
