@@ -92,125 +92,68 @@ def build(project_dir, output_dir, test_command, before_test, test_requires, tes
     built_wheel_dir = os.path.join(temp_dir, 'built_wheel')
     repaired_wheel_dir = os.path.join(temp_dir, 'repaired_wheel')
 
-    # install nuget as best way to provide python
-    nuget = 'C:\\cibw\\nuget.exe'
-    download('https://dist.nuget.org/win-x86-commandline/latest/nuget.exe', nuget)
-    # get pip fo this installation which not have.
-    get_pip_script = 'C:\\cibw\\get-pip.py'
-    download('https://bootstrap.pypa.io/get-pip.py', get_pip_script)
+    # run the before_build command
+    if before_build:
+        before_build_prepared = prepare_command(before_build, project=abs_project_dir)
+        shell([before_build_prepared], env=env)
 
-    python_configurations = get_python_configurations(build_selector)
-    for config in python_configurations:
-        # install Python
-        if config.identifier.startswith('cp'):
-            installation_path = install_cpython(config.version, config.arch, nuget)
-        elif config.identifier.startswith('pp'):
-            installation_path = install_pypy(config.version, config.arch, config.url)
-        else:
-            raise ValueError("Unknown Python implementation")
+    # build the wheel
+    if os.path.exists(built_wheel_dir):
+        shutil.rmtree(built_wheel_dir)
+    os.makedirs(built_wheel_dir)
+    shell(['pip', 'wheel', abs_project_dir, '-w', built_wheel_dir, '--no-deps'] + get_build_verbosity_extra_flags(build_verbosity), env=env)
+    built_wheel = glob(os.path.join(built_wheel_dir, '*.whl'))[0]
 
-        assert os.path.exists(os.path.join(installation_path, 'python.exe'))
+    # repair the wheel
+    if os.path.exists(repaired_wheel_dir):
+        shutil.rmtree(repaired_wheel_dir)
+    os.makedirs(repaired_wheel_dir)
+    if built_wheel.endswith('none-any.whl') or not repair_command:
+        # pure Python wheel or empty repair command
+        shutil.move(built_wheel, repaired_wheel_dir)
+    else:
+        repair_command_prepared = prepare_command(repair_command, wheel=built_wheel, dest_dir=repaired_wheel_dir)
+        shell([repair_command_prepared], env=env)
+    repaired_wheel = glob(os.path.join(repaired_wheel_dir, '*.whl'))[0]
 
-        # set up PATH and environment variables for run_with_env
-        env = os.environ.copy()
-        env['PYTHON_VERSION'] = config.version
-        env['PYTHON_ARCH'] = config.arch
-        env['PATH'] = os.pathsep.join([
-            installation_path,
-            os.path.join(installation_path, 'Scripts'),
-            env['PATH']
+    if test_command:
+        # set up a virtual environment to install and test from, to make sure
+        # there are no dependencies that were pulled in at build time.
+        shell(['pip', 'install', 'virtualenv'], env=env)
+        venv_dir = tempfile.mkdtemp()
+        shell(['python', '-m', 'virtualenv', venv_dir], env=env)
+
+        virtualenv_env = env.copy()
+
+        venv_script_path = os.path.join(venv_dir, 'Scripts')
+        if os.path.exists(os.path.join(venv_dir, 'bin')):
+            # pypy2.7 bugfix
+            venv_script_path = os.pathsep.join([venv_script_path, os.path.join(venv_dir, 'bin')])
+        virtualenv_env['PATH'] = os.pathsep.join([
+            venv_script_path,
+            virtualenv_env['PATH'],
         ])
-        # update env with results from CIBW_ENVIRONMENT
-        env = environment.as_dictionary(prev_environment=env)
+        virtualenv_env["__CIBW_VIRTUALENV_PATH__"] = venv_dir
 
-        # for the logs - check we're running the right version of python
-        shell(['where', 'python'], env=env)
-        shell(['python', '--version'], env=env)
-        shell(['python', '-c', '"import struct; print(struct.calcsize(\'P\') * 8)"'], env=env)
-        where_python = subprocess.check_output(['where', 'python'], env=env, universal_newlines=True).splitlines()[0].strip()
-        if where_python != os.path.join(installation_path, 'python.exe'):
-            print("cibuildwheel: python available on PATH doesn't match our installed instance. If you have modified PATH, ensure that you don't overwrite cibuildwheel's entry or insert python above it.", file=sys.stderr)
-            exit(1)
+        if before_test:
+            before_test_prepared = prepare_command(before_test, project=abs_project_dir)
+            shell([before_test_prepared], env=virtualenv_env)
 
-        # make sure pip is installed
-        if not os.path.exists(os.path.join(installation_path, 'Scripts', 'pip.exe')):
-            shell(['python', get_pip_script], env=env, cwd="C:\\cibw")
-        assert os.path.exists(os.path.join(installation_path, 'Scripts', 'pip.exe'))
-        where_pip = subprocess.check_output(['where', 'pip'], env=env, universal_newlines=True).splitlines()[0].strip()
-        if where_pip.strip() != os.path.join(installation_path, 'Scripts', 'pip.exe'):
-            print("cibuildwheel: pip available on PATH doesn't match our installed instance. If you have modified PATH, ensure that you don't overwrite cibuildwheel's entry or insert pip above it.", file=sys.stderr)
-            exit(1)
+        # install the wheel
+        shell(['pip', 'install', repaired_wheel + test_extras], env=virtualenv_env)
 
-        # prepare the Python environment
-        shell(['python', '-m', 'pip', 'install', '--upgrade', 'pip'], env=env)
-        shell(['pip', '--version'], env=env)
-        shell(['pip', 'install', '--upgrade', 'setuptools', 'wheel'], env=env)
+        # test the wheel
+        if test_requires:
+            shell(['pip', 'install'] + test_requires, env=virtualenv_env)
 
-        # run the before_build command
-        if before_build:
-            before_build_prepared = prepare_command(before_build, project=abs_project_dir)
-            shell([before_build_prepared], env=env)
+        # run the tests from c:\, with an absolute path in the command
+        # (this ensures that Python runs the tests against the installed wheel
+        # and not the repo code)
+        test_command_prepared = prepare_command(test_command, project=abs_project_dir)
+        shell([test_command_prepared], cwd='c:\\', env=virtualenv_env)
 
-        # build the wheel
-        if os.path.exists(built_wheel_dir):
-            shutil.rmtree(built_wheel_dir)
-        os.makedirs(built_wheel_dir)
-        shell(['pip', 'wheel', abs_project_dir, '-w', built_wheel_dir, '--no-deps'] + get_build_verbosity_extra_flags(build_verbosity), env=env)
-        built_wheel = glob(os.path.join(built_wheel_dir, '*.whl'))[0]
-
-        # repair the wheel
-        if os.path.exists(repaired_wheel_dir):
-            shutil.rmtree(repaired_wheel_dir)
-        os.makedirs(repaired_wheel_dir)
-        if built_wheel.endswith('none-any.whl') or not repair_command:
-            # pure Python wheel or empty repair command
-            shutil.move(built_wheel, repaired_wheel_dir)
-        else:
-            repair_command_prepared = prepare_command(repair_command, wheel=built_wheel, dest_dir=repaired_wheel_dir)
-            shell([repair_command_prepared], env=env)
-        repaired_wheel = glob(os.path.join(repaired_wheel_dir, '*.whl'))[0]
-
-        if test_command:
-            # set up a virtual environment to install and test from, to make sure
-            # there are no dependencies that were pulled in at build time.
-            shell(['pip', 'install', 'virtualenv'], env=env)
-            venv_dir = tempfile.mkdtemp()
-            shell(['python', '-m', 'virtualenv', venv_dir], env=env)
-
-            virtualenv_env = env.copy()
-
-            venv_script_path = os.path.join(venv_dir, 'Scripts')
-            if os.path.exists(os.path.join(venv_dir, 'bin')):
-                # pypy2.7 bugfix
-                venv_script_path = os.pathsep.join([venv_script_path, os.path.join(venv_dir, 'bin')])
-            virtualenv_env['PATH'] = os.pathsep.join([
-                venv_script_path,
-                virtualenv_env['PATH'],
-            ])
-            virtualenv_env["__CIBW_VIRTUALENV_PATH__"] = venv_dir
-
-            # check that we are using the Python from the virtual environment
-            shell(['which', 'python'], env=virtualenv_env)
-
-            if before_test:
-                before_test_prepared = prepare_command(before_test, project=abs_project_dir)
-                shell([before_test_prepared], env=virtualenv_env)
-
-            # install the wheel
-            shell(['pip', 'install', repaired_wheel + test_extras], env=virtualenv_env)
-
-            # test the wheel
-            if test_requires:
-                shell(['pip', 'install'] + test_requires, env=virtualenv_env)
-
-            # run the tests from c:\, with an absolute path in the command
-            # (this ensures that Python runs the tests against the installed wheel
-            # and not the repo code)
-            test_command_prepared = prepare_command(test_command, project=abs_project_dir)
-            shell([test_command_prepared], cwd='c:\\', env=virtualenv_env)
-
-            # clean up
-            shutil.rmtree(venv_dir)
+        # clean up
+        shutil.rmtree(venv_dir)
 
         # we're all done here; move it to output (remove if already exists)
         dst = os.path.join(output_dir, os.path.basename(repaired_wheel))
